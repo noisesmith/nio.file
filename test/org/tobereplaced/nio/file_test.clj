@@ -1,5 +1,6 @@
 (ns org.tobereplaced.nio.file-test
   (:require [clojure.test :as test :refer [deftest is]]
+            [clojure.string :as string]
             [org.tobereplaced.nio.file :refer [path compare-to starts-with?
                                                ends-with? relativize
                                                resolve-path resolve-sibling
@@ -7,10 +8,32 @@
                                                naive-visitor absolute-path
                                                file-name file-system parent
                                                root absolute? normalize
-                                               relativize register]])
+                                               relativize register
+                                               create-directories!
+                                               delete-if-exists!]])
   (:import (java.net URI)
            (java.io File)
            (java.nio.file FileSystems FileSystem StandardWatchEventKinds)))
+
+
+(def dummy-nest ["test" "foo.deleteme.d" "bar" "baz"])
+(def dummy-filename "test/foo.deleteme")
+
+(defn clean-dummies
+  []
+  (doseq [p [(path "test" "foo.deleteme.d" "bar" "baz")
+             (path "test" "foo.deleteme.d" "bar")
+             (path "test" "foo.deleteme.d")
+             (path "test" "foo.deleteme")]]
+    (delete-if-exists! p)))
+
+(defn dummy-file-fixture
+  [test]
+  (clean-dummies)
+  (test)
+  (clean-dummies))
+
+(test/use-fixtures :each dummy-file-fixture)
 
 (deftest path-test
   (is (every? #(= (path "/foo/bar") (apply path %))
@@ -127,9 +150,9 @@
                                  (fnil inc 0)))
                         (.reset event))))]
       (is watch-key)
-      (spit "test/foo.deleteme" "")
-      (spit "test/foo.deleteme" "")
-      (delete! "test/foo.deleteme")
+      (spit dummy-filename "")
+      (spit dummy-filename "")
+      (clean-dummies)
       ;; this is needed to ensure we get all the updates to the atom
       (Thread/sleep 100)
       (is (= {"ENTRY_CREATE" 1
@@ -137,3 +160,17 @@
               "ENTRY_MODIFY" 1}
              @events))
       (future-cancel counter))))
+
+(deftest copy-test
+  (copy (java.io.ByteArrayInputStream. (.getBytes "hello"))
+        (path dummy-filename))
+  (is (= "hello"
+         (slurp dummy-filename)))
+  (clean-dummies)
+  (copy (path "project.clj") (path dummy-filename))
+  (is (= (slurp "project.clj")
+         (slurp dummy-filename))))
+
+(deftest create-directories!-test
+  (create-directories! (apply path dummy-nest))
+  (is (.exists (java.io.File. (string/join "/" dummy-nest)))))
