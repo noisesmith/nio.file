@@ -88,8 +88,7 @@
         events (into-array (map (fn [entry]
                                   (get kinds entry entry))
                                 event-set))]
-    (.register ^java.nio.file.Path (path watched-path) watcher
-               (into-array events))))
+    (.register (path watched-path) watcher (into-array events))))
 
 (deflinkfn real-path
   "Returns the real path of an existing file according to the

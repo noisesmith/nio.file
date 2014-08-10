@@ -10,7 +10,7 @@
                                                relativize register]])
   (:import (java.net URI)
            (java.io File)
-           (java.nio.file FileSystems FileSystem)))
+           (java.nio.file FileSystems FileSystem StandardWatchEventKinds)))
 
 (deftest path-test
   (is (every? #(= (path "/foo/bar") (apply path %))
@@ -107,29 +107,33 @@
   ;; in this test, a watch is placed on a directory, and a future (counter) is
   ;; created, which responds to each watched event as it occurs. We verify that
   ;; the events are watched, and each event type is delivered and handled.
-  (let [watched-path (path "test")
-        fs (file-system watched-path)
-        watcher (. fs newWatchService)
-        watch-key (register watched-path watcher #{:entry-create
-                                                   :entry-delete
-                                                   :entry-modify})
-        events (atom {})
-        counter (future
-                  (while true
-                    (let [event (. watcher take)
-                          event-list (.pollEvents event)]
-                      (doseq [^java.nio.file.WatchEvent e event-list]
-                        (swap! events update-in [(-> e .kind .name)]
-                               (fnil inc 0)))
-                      (.reset event))))]
-    (is watch-key)
-    (spit "test/foo.deleteme" "")
-    (spit "test/foo.deleteme" "")
-    (delete! "test/foo.deleteme")
-    ;; this is needed to ensure we get all the updates to the atom
-    (Thread/sleep 100)
-    (is (= {"ENTRY_CREATE" 1
-            "ENTRY_DELETE" 1
-            "ENTRY_MODIFY" 1}
-           @events))
-    (future-cancel counter)))
+  (doseq [flags [#{:entry-create
+                   :entry-delete
+                   :entry-modify}
+                 [StandardWatchEventKinds/ENTRY_CREATE
+                  StandardWatchEventKinds/ENTRY_DELETE
+                  StandardWatchEventKinds/ENTRY_MODIFY]]]
+    (let [watched-path (path "test")
+          fs (file-system watched-path)
+          watcher (. fs newWatchService)
+          watch-key (register watched-path watcher flags)
+          events (atom {})
+          counter (future
+                    (while true
+                      (let [event (. watcher take)
+                            event-list (.pollEvents event)]
+                        (doseq [^java.nio.file.WatchEvent e event-list]
+                          (swap! events update-in [(-> e .kind .name)]
+                                 (fnil inc 0)))
+                        (.reset event))))]
+      (is watch-key)
+      (spit "test/foo.deleteme" "")
+      (spit "test/foo.deleteme" "")
+      (delete! "test/foo.deleteme")
+      ;; this is needed to ensure we get all the updates to the atom
+      (Thread/sleep 100)
+      (is (= {"ENTRY_CREATE" 1
+              "ENTRY_DELETE" 1
+              "ENTRY_MODIFY" 1}
+             @events))
+      (future-cancel counter))))
