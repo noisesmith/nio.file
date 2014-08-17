@@ -1,28 +1,36 @@
 (ns org.tobereplaced.nio.file
   "Wrapper for java.nio.file. All functions that accept a Path will be
-  coerced to a Path if possible."
+  coerced to a Path if possible. All functions that accept a
+  FileSystem will be coerced to a FileSystem if
+  possible. Additionally, all functions that accept a FileSystem can
+  accept no argument in exchange for the default
+  FileSystem."
   (:require [org.tobereplaced.nio.file.protocols :as p])
-  (:import (java.nio.file FileVisitResult FileVisitor Files LinkOption
-                          StandardWatchEventKinds)
-           (java.nio.file.attribute FileAttribute)))
+  (:import (java.nio.charset StandardCharsets)
+           (java.nio.file CopyOption FileSystems FileVisitResult
+                          FileVisitor Files LinkOption WatchEvent$Kind
+                          WatchEvent$Modifier WatchService)
+           (java.nio.file.attribute FileAttribute FileAttributeView
+                                    UserPrincipalLookupService)))
 
 ;;;
 ;;; Definition macros, to eliminate redundancy in function
 ;;; definitions.
 ;;;
 
-(defmacro ^:private defunarypathfn
+(defmacro ^:private defpathfn
   "Defines a function of a single path."
-  [name docstring tag method]
-  `(defn ~name
-     ~docstring
-     {:arglists '(~'[path])
-      :tag ~tag}
-     [p#]
-     (~method (path p#))))
+  [name docstring tag method & args]
+  (let [fn-args (repeat (count args) (gensym))]
+    `(defn ~name
+       ~docstring
+       {:arglists '(~(vec (concat '[path] args)))
+        :tag ~tag}
+       [p# ~@fn-args]
+       (~method (path p#) ~@fn-args))))
 
 (defmacro ^:private defbinarypathfn
-  "Defines a function of two paths."
+  "Defines a function of exactly two paths."
   [name docstring tag method]
   `(defn ~name
      ~docstring
@@ -42,17 +50,29 @@
      (~method (path p#) (into-array FileAttribute attrs#))))
 
 (defmacro ^:private deflinkfn
-  "Defines a function of a path and link options."
+  "Defines a function of a path, extra arguments, and link options."
+  [name docstring tag method & args]
+  (let [fn-args (repeat (count args) (gensym))]
+    `(defn ~name
+       ~docstring
+       {:arglists '(~(vec (concat '[path] args '[& link-options])))
+        :tag ~tag}
+       [p# ~@fn-args & options#]
+       (~method (path p#) ~@fn-args (into-array LinkOption options#)))))
+
+(defmacro ^:private deffsfn
+  "Defines a function on a filesystem."
   [name docstring tag method]
   `(defn ~name
      ~docstring
-     {:arglists '(~'[path & link-options])
+     {:arglists '(~'[] ~'[fs])
       :tag ~tag}
-     [p# & options#]
-     (~method (path p#) (into-array LinkOption options#))))
+     ([] (~name (file-system)))
+     ([fs#] (~method (file-system fs#)))))
 
 ;;;
-;;; Path creation and coercion.
+;;; Creation and coercion for Paths, FileSystems, and
+;;; WatchEvent.Kinds.
 ;;;
 
 (defn path
@@ -95,6 +115,29 @@
   link-options."
   java.nio.file.Path .toRealPath)
 
+(defn file-system
+  "Returns the FileSystem located at the URI, the FileSystem used to
+  create the Path, or the default FileSystem when called with no
+  arguments. Passing in a FileSystem returns itself.
+
+  This function is extensible through the FileSystem protocol."
+  ;; TODO: Implement FileSystems/newFileSystem as part of file-system
+  ;; and add notes about being closeable.
+  {:arglists '([] [path] [uri] [fs])
+   :tag java.nio.file.FileSystem}
+  ([] (FileSystems/getDefault))
+  ([this] (p/file-system this)))
+
+(defn watch-event-kind
+  "Returns a WatchEvent.Kind from the keyword. The keyword may
+  correspond to any of the StandardWatchEventKinds. Passing in a
+  WatchEvent.Kind returns itself.
+
+  This function is extensible through the WatchEventKind protocol."
+  {:arglists '([:entry-create] [:entry-delete] [:entry-modify] [event-kind])
+   :tag java.nio.file.WatchEvent$Kind}
+  ([this] (p/watch-event-kind this)))
+
 ;;;
 ;;; Path functions, ordered lexicographically according to their
 ;;; corresponding methods.
@@ -108,8 +151,9 @@
 ;;; Do not need to implement subpath because you can reduce with
 ;;; resolve over the path.
 ;;;
-;;; We already implemented .toAbsolutePath, .register and .toRealPath
-;;; above.
+;;; We already implemented .toAbsolutePath, .toRealPath, and
+;;; .getFileSystem above.
+;;;
 
 (defbinarypathfn compare-to
   "Returns an integer comparing path to the other lexicographically."
@@ -119,29 +163,36 @@
   "Returns true if the path ends with the other, false otherwise."
   Boolean .endsWith)
 
-(defunarypathfn file-name
+(defpathfn file-name
   "Returns the name of the file or directory denoted by the path."
   java.nio.file.Path .getFileName)
 
-(defunarypathfn file-system
-  "Returns the file system that created the path."
-  java.nio.file.FileSystem .getFileSystem)
-
-(defunarypathfn parent
+(defpathfn parent
   "Returns the parent of the path if it has one, nil otherwise."
   java.nio.file.Path .getParent)
 
-(defunarypathfn root
+(defpathfn root
   "Returns the root of the path if it has one, nil otherwise."
   java.nio.file.Path .getRoot)
 
-(defunarypathfn absolute?
+(defpathfn absolute?
   "Returns if the path is absolute, false otherwise"
   Boolean .isAbsolute)
 
-(defunarypathfn normalize
+(defpathfn normalize
   "Returns the path with redundant name elements eliminated."
   java.nio.file.Path .normalize)
+
+(defn register!
+  "Registers the file located by the path with the watch service and
+  returns a WatchKey."
+  {:arglists '([path watcher events & modifiers])
+   :tag java.nio.file.WatchKey}
+  [p watcher events & modifiers]
+  (.register (path p)
+             watcher
+             (into-array WatchEvent$Kind (map watch-event-kind events))
+             (into-array WatchEvent$Modifier modifiers)))
 
 (defbinarypathfn relativize
   "Returns a relative path between the path and other."
@@ -197,15 +248,42 @@
   "Creates a new link for an existing file."
   java.nio.file.Path Files/createLink)
 
-;; TODO: Implement createSymbolicLink
-;; TODO: Implement createTempDirectory
-;; TODO: Implement createTempFile
+(defn create-symbolic-link!
+  "Creates a symbolic link form path to target."
+  {:arglists '([path target & attrs])
+   :tag java.nio.file.Path}
+  [p target & attrs]
+  (Files/createSymbolicLink (path p) (path target)
+                            (into-array FileAttribute attrs)))
 
-(defunarypathfn delete!
+(defn create-temp-directory!
+  "Creates a temporary directory with the given prefix in the given
+  directory or the default temporary directory if none is provided."
+  {:arglists '([path prefix & attrs] [prefix & attrs])}
+  [this & more]
+  (p/create-temp-directory (first more) this (rest more)))
+
+(defn create-temp-file!
+  "Creates a temporary file with the given prefix and suffix in the
+  given directory or the default temporary directory if none is
+  provided.
+
+  Unlike the Files/createTempFile implementation, you may not pass nil
+  as the suffix when specifying a directory. This is because we would
+  be unable to determine if a string in the first argument is intended
+  to be a path to the directory or a prefix."
+  {:arglists (list '[prefix]
+                   '[prefix suffix]
+                   '[prefix suffix & attrs]
+                   '[dir prefix suffix & attrs])}
+  [this & [x y & more]]
+  (p/create-temp-file y this x  more))
+
+(defpathfn delete!
   "Deletes the file at path."
   nil Files/delete)
 
-(defunarypathfn delete-if-exists!
+(defpathfn delete-if-exists!
   "Deletes the file at path if it exists. Returns true if the file was
   deleted, false otherwise."
   Boolean Files/deleteIfExists)
@@ -214,10 +292,15 @@
   "Returns true if the file exists, false otherwise."
   Boolean Files/exists)
 
-;; TODO: Implement getAttribute
-;; TODO: What to do about getFileAttributeView?
+(deflinkfn attribute
+  "Returns the value of a file attribute."
+  Object Files/getAttribute attribute)
 
-(defunarypathfn file-store
+(deflinkfn file-attribute-view
+  "Returns a file attribute view of the given type."
+  FileAttributeView Files/getFileAttributeView attribute-view-type)
+
+(defpathfn file-store
   "Returns the file store where the file is located."
   java.nio.file.FileStore Files/getFileStore)
 
@@ -229,21 +312,24 @@
   "Returns the owner of the file."
   java.nio.file.attribute.UserPrincipal Files/getOwner)
 
-;; TODO: Implement getPosixFilePermissions
+(deflinkfn posix-file-permissions
+  "Returns the POSIX file permissions for the file."
+  ;; TODO: How to type hint a set of PosixFilePermissions?
+  nil Files/getPosixFilePermissions)
 
 (deflinkfn directory?
   "Returns true if the file is a directory, false otherwise."
   Boolean Files/isDirectory)
 
-(defunarypathfn executable?
+(defpathfn executable?
   "Returns true if the file is executable, false otherwise."
   Boolean Files/isExecutable)
 
-(defunarypathfn hidden?
+(defpathfn hidden?
   "Returns true if the file is hidden, false otherwise."
   Boolean Files/isHidden)
 
-(defunarypathfn readable?
+(defpathfn readable?
   "Returns true if the file is readable, false otherwise."
   Boolean Files/isReadable)
 
@@ -256,15 +342,20 @@
   "Returns true if the two paths are the same, false otherwise."
   Boolean Files/isSameFile)
 
-(defunarypathfn symbolic-link?
+(defpathfn symbolic-link?
   "Returns true if the file is a symbolic link, false otherwise."
   Boolean Files/isSymbolicLink)
 
-(defunarypathfn writable?
+(defpathfn writable?
   "Returns true if the file is a writable, false otherwise."
   Boolean Files/isWritable)
 
-;; TODO: Implement move
+(defn move
+  "Move the file at source to target. Returns the target path. "
+  {:tag java.nio.file.Path}
+  [source target & copy-options]
+  (Files/move (path source) (path target) (into-array CopyOption copy-options)))
+
 ;; TODO: What to do about newBufferedReader/Writer?
 ;; TODO: What to do about newByteChannel/DirectoryStream?
 ;; TODO: What to do about newInputStream/OutputStream?
@@ -273,27 +364,49 @@
   "Returns true if the file does not exist, false otherwise."
   Boolean Files/notExists)
 
-(defunarypathfn probe-content-type
+(defpathfn probe-content-type
   "Returns true if the file is a writable, false otherwise."
   String Files/probeContentType)
 
-(defunarypathfn read-all-bytes
+(defpathfn read-all-bytes
   "Returns the bytes from the file."
   "[B" Files/readAllBytes)
 
-;; TODO: Implement readAllLines
-;; TODO: Implement readAttributes
+(defn read-all-lines
+  "Returns the lines of a file."
+  {:arglists '([path] [path charset])}
+  ;; We fill this in for 1.7-to-1.8 compatibility.
+  ([p] (Files/readAllLines (path p) StandardCharsets/UTF_8))
+  ([p cs] (Files/readAllLines (path p) cs)))
 
-(defunarypathfn read-symbolic-link
+(defn read-attributes
+  "Returns the file's attributes."
+  {:arglists (list '[path attribute-type & link-options]
+                   '[path attribute-string & link-options])}
+  [p attributes & options]
+  (p/read-attributes attributes (path p) options))
+
+(defpathfn read-symbolic-link
   "Returns the target of a symbolic link."
   java.nio.file.Path Files/readSymbolicLink)
 
-;; TODO: Implement setAttribute
-;; TODO: Implement setLastModifiedTime
-;; TODO: Implement setOwner
-;; TODO: Implement setPosixFilePermissions
+(deflinkfn set-attribute!
+  "Sets the value of a file attribute."
+  java.nio.file.Path Files/setAttribute attribute value)
 
-(defunarypathfn size
+(defpathfn set-last-modified-time!
+  "Sets the last modified time of the file."
+  java.nio.file.Path Files/setLastModifiedTime file-time)
+
+(defpathfn set-owner!
+  "Sets the file's owner."
+  java.nio.file.Path Files/setOwner owner)
+
+(defpathfn set-posix-file-permissions!
+  "Sets the file's POSIX permissions."
+  java.nio.file.Path Files/setPosixFilePermissions permissions)
+
+(defpathfn size
   "Returns the size of the file in bytes."
   Long Files/size)
 
@@ -366,3 +479,75 @@
   [start visitor & {:keys [file-visit-options max-depth]
                     :or {file-visit-options #{} max-depth Integer/MAX_VALUE}}]
   (Files/walkFileTree (path start) file-visit-options max-depth visitor))
+
+;;;
+;;; FileSystem functions, ordered lexicographically according to their
+;;; corresponding methods on the FileSystem class.
+;;;
+;;; Do not need to implement .close because of other clojure
+;;; facilities.
+;;;
+;;; We already implemented .getPath above.
+;;;
+
+(deffsfn file-stores
+  "Returns an iterable of the FileStores of a file system."
+  ;; TODO: Is there any kind of type hint we can provide for this?
+  nil
+  .getFileStores)
+
+;; TODO: Implement getPathMatcher
+
+(deffsfn root-directories
+  "Returns an iterable of the paths of the root directories of the
+  file system"
+  ;; TODO: What is the type-hint for an Iterable of Paths?
+  nil
+  .getRootDirectories)
+
+(deffsfn separator
+  "Returns the name separator of the file system."
+  String
+  .getSeparator)
+
+(deffsfn user-principal-lookup-service
+  "Returns the UserPrincipalLookupService for the filesystem."
+  UserPrincipalLookupService
+  .getUserPrincipalLookupService)
+
+(deffsfn open?
+  "Returns true if the file system is open, false otherwise."
+  Boolean
+  .isOpen)
+
+(deffsfn read-only?
+  "Returns true if the file system is read-only, false otherwise."
+  Boolean
+  .isReadOnly)
+
+;; TODO: There should be an extension library that reifies a
+;; WatchService from a platform based WatchService and acts like a
+;; core.async channel.
+(deffsfn watch-service
+  "Returns a new WatchService for the file system. Should be used
+  inside with-open to ensure the WatchService is properly closed."
+  WatchService
+  .newWatchService)
+
+(deffsfn provider
+  "Returns the FileSystemProvider corresponding to the file system."
+  java.nio.file.spi.FileSystemProvider
+  .provider)
+
+(deffsfn supported-file-attribute-views
+  "Returns a set of names of file attribute views supported by the
+  file system."
+  nil
+  .supportedFileAttributeViews)
+
+;;;
+;;; TODO: Implement FileSystemProvider methods that aren't delegated
+;;; by Files.
+;;;
+;;; TODO: Implement UserPrincipalLookupService methods and coercion.
+;;;

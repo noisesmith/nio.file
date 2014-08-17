@@ -1,9 +1,12 @@
 (ns org.tobereplaced.nio.file.protocols
-  (:import (java.io File InputStream OutputStream)
+  (:import (clojure.lang Keyword)
+           (java.io File InputStream OutputStream)
            (java.net URI)
            (java.nio.charset Charset StandardCharsets)
-           (java.nio.file CopyOption FileSystem Files OpenOption Path
-                          Paths)))
+           (java.nio.file CopyOption FileSystems Files LinkOption
+                          OpenOption Path Paths StandardWatchEventKinds
+                          WatchEvent$Kind)
+           (java.nio.file.attribute FileAttribute)))
 
 (def ^:private empty-string-array (into-array String []))
 
@@ -24,15 +27,41 @@
   (nary-path [this more]))
 
 (extend-protocol NaryPath
-  FileSystem
+  java.nio.file.FileSystem
   (nary-path [this [s & more]] (.getPath this s (into-array String more)))
   String
   (nary-path [this more] (Paths/get this (into-array String more))))
 
-;; Private implementation protocol to allow for dispatch when it is
-;; known that we are copying from an input stream.
+(defprotocol FileSystem
+  (file-system [this]))
+
+(extend-protocol FileSystem
+  java.nio.file.FileSystem
+  (file-system [this] this)
+  URI
+  (file-system [this] (FileSystems/getFileSystem this))
+  Path
+  (file-system [this] (.getFileSystem this)))
+
+(defprotocol WatchEventKind
+  (watch-event-kind [this]))
+
+(extend-protocol WatchEventKind
+  WatchEvent$Kind
+  (watch-event-kind [this] this)
+  Keyword
+  (watch-event-kind [this]
+    (or (get {:entry-create StandardWatchEventKinds/ENTRY_CREATE
+              :entry-delete StandardWatchEventKinds/ENTRY_DELETE
+              :entry-modify StandardWatchEventKinds/ENTRY_MODIFY}
+             this)
+        (->> this
+             (format "No StandardWatchEventKind found for keyword: %s")
+             IllegalArgumentException.
+             throw))))
+
 (defprotocol ^:private CopyFromInputStream
-  (copy-from-input-stream [this source options]))
+             (copy-from-input-stream [this source options]))
 
 (extend-protocol CopyFromInputStream
   Path
@@ -44,10 +73,8 @@
   (copy-from-input-stream [this source options]
     (copy-from-input-stream (unary-path this) source options)))
 
-;; Private implementation protocol to allow for dispatch when it is
-;; known that we are copying from a path.
 (defprotocol ^:private CopyFromPath
-  (copy-from-path [this source options]))
+             (copy-from-path [this source options]))
 
 (extend-protocol CopyFromPath
   OutputStream
@@ -76,10 +103,56 @@
   (copy [this target options]
     (copy (unary-path this) target options)))
 
-;; Private implementation protocol to allow for dispatch based on
-;; whether a charset is provided or not.
+(defprotocol ^:private CreateTempDirectory
+             (create-temp-directory [prefix dir attrs]))
+
+(extend-protocol CreateTempDirectory
+  nil
+  (create-temp-directory [_ prefix attrs]
+    (Files/createTempDirectory prefix (into-array FileAttribute attrs)))
+  FileAttribute
+  (create-temp-directory [attr prefix attrs]
+    (Files/createTempDirectory prefix
+                               (into-array FileAttribute (cons attr attrs))))
+  String
+  (create-temp-directory [prefix dir attrs]
+    (Files/createTempDirectory (unary-path dir) prefix
+                               (into-array FileAttribute attrs))))
+
+(defprotocol ^:private CreateTempFile
+             (create-temp-file [suffix dir prefix attrs]))
+
+(extend-protocol CreateTempFile
+  nil
+  (create-temp-file [_ prefix suffix attrs]
+    (Files/createTempFile prefix suffix
+                          (into-array FileAttribute attrs)))
+  FileAttribute
+  (create-temp-file [attr prefix suffix attrs]
+    (Files/createTempFile prefix suffix
+                          (into-array FileAttribute (cons attr attrs))))
+  String
+  (create-temp-file [suffix dir prefix attrs]
+    (Files/createTempFile (unary-path dir) prefix suffix
+                          (into-array FileAttribute attrs))))
+
+(defprotocol ^:private ReadAttributes
+             (read-attributes [this path options]))
+
+(extend-protocol ReadAttributes
+  Class
+  (read-attributes [this path options]
+    (Files/readAttributes ^Path path this
+                          ^"[Ljava.nio.file.LinkOption;"
+                          (into-array LinkOption options)))
+  String
+  (read-attributes [this path options]
+    (Files/readAttributes ^Path path this
+                          ^"[Ljava.nio.file.LinkOption;"
+                          (into-array LinkOption options))))
+
 (defprotocol ^:private WriteLines
-  (write-lines [this path lines options]))
+             (write-lines [this path lines options]))
 
 (extend-protocol WriteLines
   Charset

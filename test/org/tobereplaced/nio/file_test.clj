@@ -15,7 +15,6 @@
            (java.io File)
            (java.nio.file FileSystems FileSystem StandardWatchEventKinds)))
 
-
 (def dummy-nest ["test" "foo.deleteme.d" "bar" "baz"])
 (def dummy-filename "test/foo.deleteme")
 
@@ -126,10 +125,12 @@
   (is (starts-with? (path "foo/bar") (path "foo")))
   (is (not (starts-with? (path "foo/bar") (path "f")))))
 
-(deftest register-test
+;; TODO: Rewrite to use temporary directories
+(deftest register!-test
   ;; in this test, a watch is placed on a directory, and a future (counter) is
   ;; created, which responds to each watched event as it occurs. We verify that
   ;; the events are watched, and each event type is delivered and handled.
+
   (doseq [flags [#{:entry-create
                    :entry-delete
                    :entry-modify}
