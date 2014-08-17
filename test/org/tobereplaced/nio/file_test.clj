@@ -8,7 +8,7 @@
                                                naive-visitor absolute-path
                                                file-name file-system parent
                                                root absolute? normalize
-                                               relativize register
+                                               relativize register!
                                                create-directories!
                                                delete-if-exists!]])
   (:import (java.net URI)
@@ -140,7 +140,7 @@
     (let [watched-path (path "test")
           fs (file-system watched-path)
           watcher (. fs newWatchService)
-          watch-key (register watched-path watcher flags)
+          watch-key (register! watched-path watcher flags)
           events (atom {})
           counter (future
                     (while true
